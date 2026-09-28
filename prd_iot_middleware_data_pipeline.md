@@ -1,10 +1,9 @@
-# 📄 Product Requirement Document (PRD)
+# Product Requirement Document (PRD)
 ## **Sistem Middleware & Pipeline Data IoT Telemetri Berbasis Flask & Firebase**
 
 | Attribute | Details |
 | :--- | :--- |
 | **Nama Project** | IoT Middleware & Data Processing Pipeline |
-| **Penyusun** | Carlos |
 | **Status** | Draft / Ready for Implementation |
 | **Versi** | 1.0 |
 | **Lingkungan Server** | VPS UGM (Akses via OpenVPN & VS Code Remote SSH) |
