@@ -44,8 +44,8 @@ except ValueError:
 # KONFIGURASI PIPELINE
 # ============================================================
 
-# ESP32 diharapkan mengirim data setiap 5 detik
-EXPECTED_INTERVAL_SECONDS = 5
+# ESP32 diharapkan mengirim data setiap 1 menit
+EXPECTED_INTERVAL_SECONDS = 60
 
 # Toleransi timestamp sebelum dianggap sebagai missing
 MISSING_TOLERANCE_SECONDS = 2
@@ -138,8 +138,8 @@ data_lock = threading.Lock()
 # actual + estimated
 #
 # Dengan pemisahan ini:
-# raw_5sec tetap menjadi sumber data aktual,
-# sedangkan processed_5sec berisi timeline hasil middleware.
+# raw tetap menjadi sumber data aktual,
+# sedangkan processed berisi timeline hasil middleware.
 
 raw_records = {}
 processed_records = {}
@@ -1154,7 +1154,7 @@ def save_actual_record(record):
     # --------------------------------------------------------
 
     db.reference(
-        f"raw_5sec/{key}"
+        f"raw/{key}"
     ).set(record)
 
     # --------------------------------------------------------
@@ -1162,7 +1162,7 @@ def save_actual_record(record):
     # --------------------------------------------------------
 
     db.reference(
-        f"processed_5sec/{key}"
+        f"processed/{key}"
     ).set(record)
 
 
@@ -1181,7 +1181,7 @@ def save_estimated_record(record):
     )
 
     db.reference(
-        f"processed_5sec/{key}"
+        f"processed/{key}"
     ).set(record)
 
 
@@ -1251,7 +1251,7 @@ def save_problematic_input(
     )
 
     db.reference(
-        f"problematic_5sec/{key}"
+        f"problematic/{key}"
     ).set(record)
 
 
@@ -2424,8 +2424,8 @@ def handle_late_data(actual_record):
     # Masuk ke:
     # raw_records
     # processed_records
-    # Firebase raw_5sec
-    # Firebase processed_5sec
+    # Firebase raw
+    # Firebase processed
     # --------------------------------------------------------
 
     save_actual_record(
@@ -3838,7 +3838,7 @@ def load_existing_data():
     try:
 
         raw_data = db.reference(
-            "raw_5sec"
+            "raw"
         ).get()
 
         if raw_data:
@@ -3895,7 +3895,7 @@ def load_existing_data():
 
         processed_data = (
             db.reference(
-                "processed_5sec"
+                "processed"
             ).get()
         )
 
@@ -3934,7 +3934,7 @@ def load_existing_data():
         else:
 
             # ------------------------------------------------
-            # Jika processed_5sec belum ada,
+            # Jika processed belum ada,
             # gunakan raw sebagai processed awal.
             # ------------------------------------------------
 
@@ -4048,11 +4048,11 @@ if __name__ == "__main__":
     )
 
     print(
-        "raw_5sec       = actual sensor data"
+        "raw       = actual sensor data"
     )
 
     print(
-        "processed_5sec = actual + estimated"
+        "processed = actual + estimated"
     )
 
     print(
@@ -4138,3 +4138,58 @@ if __name__ == "__main__":
         threaded=True
 
     )
+# ============================================================
+# API INGESTION ENDPOINT
+# ============================================================
+
+@app.route('/api/telemetry', methods=['POST'])
+def receive_telemetry():
+    data = request.get_json()
+    
+    if not data:
+        return jsonify({"status": "error", "message": "Payload JSON kosong"}), 400
+
+    payload_list = data if isinstance(data, list) else [data]
+    
+    processed_results = []
+    
+    # We must use datetime.now(timezone.utc) but timezone is imported from datetime
+    # Already imported in Server.py: from datetime import datetime, timezone, timedelta
+    ingestion_timestamp = datetime.now(timezone.utc)
+    
+    for record in payload_list:
+        is_valid, msg = validate_basic_data(record)
+        
+        if is_valid:
+            actual_record = create_actual_record(record, ingestion_timestamp, 0.0)
+            
+            timestamp = actual_record["timestamp"]
+            anomalies = detect_anomalies(actual_record, timestamp)
+            
+            if anomalies:
+                save_problematic_input(record, timestamp, anomalies, "anomaly_detected")
+                bma_record = apply_bma_to_problematic_record(actual_record, anomalies, "anomaly_detected")
+                if bma_record:
+                    save_estimated_record(bma_record)
+                    processed_results.append(bma_record)
+                else:
+                    processed_results.append(actual_record)
+            else:
+                save_actual_record(actual_record)
+                processed_results.append(actual_record)
+        else:
+            timestamp = record.get("timestamp", normalize_timestamp(datetime.now(timezone.utc)))
+            nulls = detect_null_parameters(record)
+            invalids = detect_invalid_numeric_parameters(record)
+            probs = list(set(nulls + invalids))
+            save_problematic_input(record, timestamp, probs, msg)
+            
+            processed_results.append({"status": "problematic", "message": msg, "device_id": record.get("device_id")})
+        
+    return jsonify({
+        "status": "success", 
+        "processed_count": len(processed_results)
+    }), 200
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
