@@ -37,6 +37,10 @@ venv.bak/
 # Firebase / Secrets
 serviceAccountKey.json
 firebase-*.json
+*-adminsdk-*.json
+*firebase-adminsdk*.json
+*-export.json
+backup_*.json
 *.pem
 
 # VS Code
