@@ -883,6 +883,7 @@ def classify_data_gap(
     - planned_cleaning_interval
     - missing_interval_detected
     - restart_normal
+    - restart_with_missing_data
     - long_outage_or_shutdown
     - out_of_order_or_duplicate
     - needs_review
@@ -963,13 +964,41 @@ def classify_data_gap(
     # --------------------------------------------------------
     # 4. Restart Terdeteksi (Jeda moderat <= 45 menit)
     # --------------------------------------------------------
+    # Waktu restart normal ESP32:
+    #   5m warmup sensor + 3m purge + 5m acq = ~13 menit minimum
+    #   + siklus cleaning sebelum restart = ~18 menit maksimum wajar
+    # Jika jeda > 23 menit setelah restart → kemungkinan ada data hilang
+    # SEBELUM perangkat mati/restart (slot di antara data terakhir & restart)
+    RESTART_MAX_NORMAL_SECONDS = 23 * 60  # 23 menit (18m cleaning + 5m toleransi)
     if restart_detected:
-        result["status"] = "restart_normal"
-        result["reason"] = (
-            "Perangkat terdeteksi restart (elapsed_s atau idx reset). "
-            "Siklus baru dimulai tanpa estimasi missing data."
-        )
-        result["generate_estimation"] = False
+        if gap_seconds > RESTART_MAX_NORMAL_SECONDS:
+            # Estimasi slot hilang: kurangi waktu warmup restart (~2 siklus normal)
+            raw_missing = max(1, int(gap_seconds / NORMAL_INTERVAL_SECONDS) - 2)
+            missing_timestamps = []
+            for step in range(1, raw_missing + 1):
+                t_slot = previous_dt + timedelta(seconds=step * NORMAL_INTERVAL_SECONDS)
+                if t_slot < current_dt:
+                    missing_timestamps.append(t_slot)
+            missing_count = len(missing_timestamps)
+            result["status"] = "restart_with_missing_data"
+            result["generate_estimation"] = True
+            result["missing_count"] = missing_count
+            result["missing_timestamps"] = missing_timestamps
+            result["restart_detected"] = True
+            result["reason"] = (
+                f"Restart terdeteksi namun jeda {round(gap_minutes, 1)} menit "
+                f"melebihi batas wajar restart ({RESTART_MAX_NORMAL_SECONDS // 60} menit). "
+                f"Terdeteksi {missing_count} slot data hilang sebelum restart. "
+                "BMA & CSW diaktifkan untuk slot-slot tersebut."
+            )
+        else:
+            result["status"] = "restart_normal"
+            result["reason"] = (
+                "Perangkat terdeteksi restart (elapsed_s atau idx reset). "
+                f"Jeda {round(gap_minutes, 1)} menit masih dalam batas wajar restart. "
+                "Siklus baru dimulai tanpa estimasi missing data."
+            )
+            result["generate_estimation"] = False
         return result
 
     # --------------------------------------------------------
@@ -1022,13 +1051,36 @@ def classify_data_gap(
         missing_count = 0
         missing_timestamps = []
 
-        # Sub-kasus A: idx melompat (misal 312 -> 315)
-        if idx_available and current_idx > previous_idx + 1:
+        # Estimasi berbasis waktu (selalu dihitung sebagai acuan)
+        time_based_count = max(1, int(round(gap_seconds / NORMAL_INTERVAL_SECONDS)) - 1)
+
+        # Sub-kasus A: idx melompat — HANYA dipercaya jika:
+        #   1. elapsed_s terus naik (sesi yang sama, bukan restart)
+        #   2. idx_diff masuk akal (≤ 3× estimasi berbasis waktu)
+        # Tujuan: mencegah false positive saat idx loncat karena beda sesi boot
+        elapsed_continuous = (
+            previous_elapsed is not None
+            and current_elapsed is not None
+            and current_elapsed > previous_elapsed
+        )
+        use_idx_diff = (
+            idx_available
+            and current_idx > previous_idx + 1
+            and elapsed_continuous
+        )
+
+        if use_idx_diff:
             idx_diff = current_idx - previous_idx - 1
-            missing_count = idx_diff
+            # Sanity check: idx_diff tidak boleh jauh lebih besar dari estimasi waktu
+            # (mencegah angka tidak masuk akal seperti idx 2 → 219 → 216 slot)
+            if idx_diff <= time_based_count * 3:
+                missing_count = idx_diff
+            else:
+                # idx_diff absurd → kemungkinan lompatan idx antar-sesi; pakai waktu
+                missing_count = time_based_count
         else:
             # Sub-kasus B: Berdasarkan kelipatan waktu ~8 menit
-            missing_count = max(1, int(round(gap_seconds / NORMAL_INTERVAL_SECONDS)) - 1)
+            missing_count = time_based_count
 
         # Buat timestamp untuk slot-slot yang hilang
         step_seconds = gap_seconds / (missing_count + 1)
@@ -1113,7 +1165,8 @@ def check_csw_gap_eligibility(
     allowed_statuses = {
         "normal_interval",
         "missing_interval_detected",
-        "restart_with_missing_interval"
+        "restart_with_missing_interval",
+        "restart_with_missing_data"
     }
 
     allowed = (
