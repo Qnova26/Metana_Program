@@ -41,6 +41,17 @@ CLEANING_TOLERANCE_SECONDS = 1 * 60
 # Cleaning dilakukan setiap 10 kali pengiriman
 CYCLES_PER_BATCH = 10
 
+# ============================================================
+# THRESHOLD DETEKSI GANGGUAN PANJANG (long_outage_or_shutdown)
+# ============================================================
+# Nilai default produksi: 45 menit
+# Untuk PENGUJIAN BMA & CSW (simulator_uji_bma_csw.py):
+#   Naikkan ke 200 menit agar semua gap terdeteksi sebagai missing data.
+#   Kembalikan ke 45 setelah pengujian selesai.
+#
+# Cara ubah: ganti angka di bawah, lalu RESTART SERVER.
+LONG_OUTAGE_THRESHOLD_MINUTES = 45   # Default produksi (ubah ke 200 saat menguji simulator_uji_bma_csw)
+
 # Batas interval normal
 NORMAL_MIN_SECONDS = (
     NORMAL_INTERVAL_SECONDS - NORMAL_TOLERANCE_SECONDS
@@ -952,10 +963,10 @@ def classify_data_gap(
     # --------------------------------------------------------
     # 3. Long Outage / Device Shutdown (> 45 menit)
     # --------------------------------------------------------
-    if gap_seconds > 45 * 60:
+    if gap_seconds > LONG_OUTAGE_THRESHOLD_MINUTES * 60:
         result["status"] = "long_outage_or_shutdown"
         result["reason"] = (
-            f"Jeda {round(gap_minutes, 1)} menit melebihi 45 menit "
+            f"Jeda {round(gap_minutes, 1)} menit melebihi {LONG_OUTAGE_THRESHOLD_MINUTES} menit "
             "(perangkat mati/dimatikan). Tidak menghasilkan estimasi BMA."
         )
         result["generate_estimation"] = False
